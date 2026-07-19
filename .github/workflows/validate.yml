@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege by default; jobs opt into more only if needed.
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.13']  # 3.12 is the required baseline
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Ruff lint
+        run: ruff check src/ tests/
+      - name: Ruff format check
+        run: ruff format --check src/ tests/
+      - name: Mypy (strict)
+        run: mypy src/
+      - name: Pytest
+        run: pytest -q
+
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.9.8
+      - name: Format
+        run: terraform -chdir=infrastructure/terraform fmt -check -recursive
+      - name: Validate
+        run: |
+          terraform -chdir=infrastructure/terraform init -backend=false
+          terraform -chdir=infrastructure/terraform validate
+      # TODO(security): pin to a verified commit SHA before publishing (see
+      # docs/reviews/pre-publication-security-review.md).
+      - name: TFLint
+        uses: terraform-linters/setup-tflint@v4  # tag-pinned pending SHA verification
+        with:
+          tflint_version: v0.54.0
+      - run: tflint --chdir=infrastructure/terraform --recursive
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Trivy config scan
+        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # master (verify SHA before publish)
+        with:
+          scan-type: 'config'
+          scan-ref: 'infrastructure/terraform'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+      # TODO(security): pin to a verified commit SHA before publishing.
+      - name: Checkov
+        uses: bridgecrewio/checkov-action@v12  # tag-pinned pending SHA verification
+        with:
+          directory: infrastructure/terraform
+          quiet: true
+      - name: Confidentiality scan
+        run: bash scripts/confidentiality_scan.sh
+
+  pre-commit:
+    name: pre-commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: '3.12'
+      # TODO(security): pin to a verified commit SHA before publishing.
+      - uses: pre-commit/action@v3.0.1  # tag-pinned pending SHA verification
