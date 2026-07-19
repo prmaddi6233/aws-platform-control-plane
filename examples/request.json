@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "account": {
+    "name": "example-payments-production",
+    "owner_email": "payments@example.com",
+    "environment": "production",
+    "data_classification": "confidential",
+    "monthly_budget": 5000,
+    "regions": ["ca-central-1"]
+  }
+}
