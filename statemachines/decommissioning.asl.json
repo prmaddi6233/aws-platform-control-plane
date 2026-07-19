@@ -1,0 +1,155 @@
+{
+  "Comment": "AWS Account Decommissioning Workflow: Discover -> Check Commitments -> Quarantine -> Close.",
+  "StartAt": "DiscoverDependencies",
+  "States": {
+    "DiscoverDependencies": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DiscoverDependenciesFunction}",
+        "Payload": {
+          "aws_account_id.$": "$.aws_account_id"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "RetryableStepError",
+            "ThrottlingException"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "ResultPath": "$.dependencies",
+      "Next": "CheckCommitments",
+      "TimeoutSeconds": 900
+    },
+    "CheckCommitments": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${CheckCommitmentsFunction}",
+        "Payload": {
+          "aws_account_id.$": "$.aws_account_id"
+        }
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "ResultPath": "$.commitments",
+      "Next": "ExportEvidence",
+      "TimeoutSeconds": 900
+    },
+    "ExportEvidence": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ExportEvidenceFunction}",
+        "Payload": {
+          "aws_account_id.$": "$.aws_account_id",
+          "dependencies.$": "$.dependencies.Payload",
+          "commitments.$": "$.commitments.Payload"
+        }
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "ResultPath": "$.evidence",
+      "Next": "QuarantineAccount",
+      "TimeoutSeconds": 900
+    },
+    "QuarantineAccount": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${QuarantineAccountFunction}",
+        "Payload": {
+          "aws_account_id.$": "$.aws_account_id",
+          "request_id.$": "$.request_id"
+        }
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "ResultPath": "$.quarantine",
+      "Next": "WaitQuarantinePeriod",
+      "TimeoutSeconds": 900
+    },
+    "WaitQuarantinePeriod": {
+      "Type": "Wait",
+      "Seconds": 604800,
+      "Comment": "Wait 7 days before final closure (simulated here)",
+      "Next": "CloseAccount"
+    },
+    "CloseAccount": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${CloseAccountFunction}",
+        "Payload": {
+          "aws_account_id.$": "$.aws_account_id",
+          "request_id.$": "$.request_id"
+        }
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "End": true,
+      "TimeoutSeconds": 900
+    },
+    "HandleFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${HandleFailureFunction}",
+        "Payload": {
+          "request_id.$": "$.request_id",
+          "error.$": "$.error"
+        }
+      },
+      "Next": "FailWorkflow",
+      "TimeoutSeconds": 900
+    },
+    "FailWorkflow": {
+      "Type": "Fail",
+      "Cause": "Decommissioning workflow failed.",
+      "Error": "DecommissioningFailed"
+    }
+  },
+  "TimeoutSeconds": 86400
+}

@@ -1,0 +1,216 @@
+{
+  "Comment": "AWS Account Provisioning Workflow with Idempotency, Retries, and DLQ handling.",
+  "StartAt": "CreateAccount",
+  "States": {
+    "CreateAccount": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${CreateAccountFunction}",
+        "Payload": {
+          "request_id.$": "$.request_id",
+          "account_name.$": "$.account_name",
+          "owner.$": "$.owner",
+          "environment.$": "$.environment"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "RetryableStepError",
+            "ThrottlingException",
+            "TooManyRequestsException"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 5,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "ResultPath": "$.create_account_result",
+      "Next": "ApplyBaseline",
+      "TimeoutSeconds": 3600
+    },
+    "ApplyBaseline": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ApplyBaselineFunction}",
+        "Payload": {
+          "aws_account_id.$": "$.create_account_result.Payload.aws_account_id",
+          "regions.$": "$.regions"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "RetryableStepError",
+            "ThrottlingException"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "ResultPath": "$.baseline_result",
+      "Next": "AssignIdentity",
+      "TimeoutSeconds": 900
+    },
+    "AssignIdentity": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${AssignIdentityFunction}",
+        "Payload": {
+          "aws_account_id.$": "$.create_account_result.Payload.aws_account_id",
+          "owner.$": "$.owner",
+          "environment.$": "$.environment"
+        }
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "ResultPath": "$.identity_result",
+      "Next": "CreateBudget",
+      "TimeoutSeconds": 900
+    },
+    "CreateBudget": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Create the AWS Budget and cost-anomaly monitor so spend is attributed from the first dollar. Mandatory per FinOps policy.",
+      "Parameters": {
+        "FunctionName": "${CreateBudgetFunction}",
+        "Payload": {
+          "aws_account_id.$": "$.create_account_result.Payload.aws_account_id",
+          "monthly_budget.$": "$.monthly_budget",
+          "owner.$": "$.owner"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "RetryableStepError",
+            "ThrottlingException"
+          ],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "ResultPath": "$.budget_result",
+      "Next": "MarkCompleted",
+      "TimeoutSeconds": 900
+    },
+    "MarkCompleted": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${MarkCompletedFunction}",
+        "Payload": {
+          "request_id.$": "$.request_id",
+          "aws_account_id.$": "$.create_account_result.Payload.aws_account_id"
+        }
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "ResultPath": "$.complete_result",
+      "Next": "NotifyOwner",
+      "TimeoutSeconds": 900
+    },
+    "NotifyOwner": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Best-effort owner notification. Failure here must not fail an otherwise-completed provision, so it catches to success.",
+      "Parameters": {
+        "FunctionName": "${NotifyOwnerFunction}",
+        "Payload": {
+          "request_id.$": "$.request_id",
+          "owner.$": "$.owner",
+          "aws_account_id.$": "$.create_account_result.Payload.aws_account_id"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Succeed",
+          "ResultPath": "$.notify_error"
+        }
+      ],
+      "End": true,
+      "TimeoutSeconds": 900
+    },
+    "Succeed": {
+      "Type": "Succeed"
+    },
+    "HandleFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${HandleFailureFunction}",
+        "Payload": {
+          "request_id.$": "$.request_id",
+          "error.$": "$.error"
+        }
+      },
+      "Next": "FailWorkflow",
+      "TimeoutSeconds": 900
+    },
+    "FailWorkflow": {
+      "Type": "Fail",
+      "Cause": "Provisioning workflow failed. See execution history.",
+      "Error": "ProvisioningFailed"
+    }
+  },
+  "TimeoutSeconds": 86400
+}
