@@ -54,7 +54,7 @@ jobs:
       # TODO(security): pin to a verified commit SHA before publishing (see
       # docs/reviews/pre-publication-security-review.md).
       - name: TFLint
-        uses: terraform-linters/setup-tflint@v4  # tag-pinned pending SHA verification
+        uses: terraform-linters/setup-tflint@v6  # tag-pinned pending SHA verification
         with:
           tflint_version: v0.54.0
       - run: tflint --chdir=infrastructure/terraform --recursive
